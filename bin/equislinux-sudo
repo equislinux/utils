@@ -37,6 +37,11 @@ Usage: equislinux-sudo [install|remove|status] [options]
 Install (dry-run by default) a set of NOPASSWD rules for the release and
 validation scripts in the EquisLinux workspace.
 
+Actions:
+  install              Plan the rules (default; use --apply to write).
+  remove               Remove the rules and the legacy xlnux-sprint file.
+  status               Show the active rules.
+
 Options:
   --apply              Actually write /etc/sudoers.d/equislinux (needs sudo).
   --dry-run            Print the proposed rules without changing anything.
@@ -45,6 +50,11 @@ Options:
   --keep-legacy        Do not remove /etc/sudoers.d/xlnux-sprint.
   --strict             Refuse targets that are writable by the target user.
   -h, --help           Show this help.
+
+Legacy aliases (same as the old xlnux-sudo.sh):
+  --create             Same as: install --apply
+  --remove             Same as: remove
+  --status             Same as: status
 
 Security note: NOPASSWD on a script that the target user can edit is
 equivalent to passwordless root. This utility warns about it; it is meant
@@ -56,6 +66,19 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         install|remove|status)
             ACTION=$1
+            shift
+            ;;
+        --create)
+            ACTION=install
+            APPLY=1
+            shift
+            ;;
+        --remove)
+            ACTION=remove
+            shift
+            ;;
+        --status)
+            ACTION=status
             shift
             ;;
         --apply)
