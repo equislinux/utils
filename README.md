@@ -41,6 +41,45 @@ unambiguous. There is intentionally no `.env`: it is working-directory
 dependent and easy to commit by accident. See
 [`docs/workspace-layout.md`](docs/workspace-layout.md).
 
+## Clone the workspace
+
+`equislinux-clone` bootstraps a new machine by cloning every repository in the
+organization into a workspace named `equislinux`. It also refreshes existing
+checkouts with `git fetch --all --prune --tags`.
+
+From a checkout:
+
+```bash
+./bin/equislinux-clone --dest ~/repos/equislinux
+```
+
+On a machine without the repository (the script is standalone):
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/equislinux/utils/main/bin/equislinux-clone \
+  -o /tmp/equislinux-clone
+bash /tmp/equislinux-clone --dest "$HOME/repos/equislinux"
+```
+
+Or directly through a pipe:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/equislinux/utils/main/bin/equislinux-clone \
+  | bash -s -- --dest "$HOME/repos/equislinux"
+```
+
+- Requires `gh` installed and authenticated (`gh auth login`) and `git`.
+- Private repositories (`ops`) are cloned when the current `gh` session can
+  see them. The script never reads or stores tokens. Use `--no-private` to
+  leave them out and clone them manually.
+- Every branch currently on the remote is fetched. By default the script also
+  creates local tracking branches; use `--no-local-branches` to keep only
+  `origin/*`.
+- Useful options: `--dry-run`, `--only NAME`, `--org NAME`.
+- Full details: [`docs/cloning.md`](docs/cloning.md).
+
 ## Commands
 
 ```bash
