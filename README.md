@@ -53,6 +53,16 @@ From a checkout:
 ./bin/equislinux-clone --dest ~/repos/equislinux
 ```
 
+From the directory that should become the workspace:
+
+```bash
+cd ~/repos/equislinux
+./bin/equislinux-clone --here
+```
+
+`--here` uses the current directory when it is already named `equislinux`;
+otherwise it creates `./equislinux` inside the current directory.
+
 On a machine without the repository (the script is standalone):
 
 ```bash
@@ -77,7 +87,7 @@ curl -fsSL \
 - Every branch currently on the remote is fetched. By default the script also
   creates local tracking branches; use `--no-local-branches` to keep only
   `origin/*`.
-- Useful options: `--dry-run`, `--only NAME`, `--org NAME`.
+- Useful options: `--here`, `--dry-run`, `--only NAME`, `--org NAME`.
 - Full details: [`docs/cloning.md`](docs/cloning.md).
 
 ## Commands

@@ -9,6 +9,7 @@ DEST=""
 INCLUDE_PRIVATE=1
 LOCAL_BRANCHES=1
 DRY_RUN=0
+HERE=0
 ONLY=()
 FAILED=0
 
@@ -27,6 +28,8 @@ with --all --prune --tags; they are not pulled or reset.
 Options:
   --dest DIR           Workspace directory (must be named "equislinux").
   --workspace DIR      Alias for --dest.
+  --here               Use the current directory. If its basename is not
+                       "equislinux", create ./equislinux inside it.
   --org NAME           GitHub organization (default: equislinux).
   --no-private         Clone public repositories only.
   --public-only        Alias for --no-private.
@@ -58,8 +61,9 @@ Remote use (no checkout needed):
 
 Examples:
   ./bin/equislinux-clone --dest ~/repos/equislinux
-  ./bin/equislinux-clone --dest ~/Documents/equislinux --no-private
-  ./bin/equislinux-clone --only ops --dest /tmp/test/equislinux
+  cd ~/repos/equislinux && ./bin/equislinux-clone --here
+  ./bin/equislinux-clone --here --dest /tmp/x  # error: mutually exclusive
+  ./bin/equislinux-clone --only ops --here
 EOF
 }
 
@@ -68,6 +72,10 @@ while [[ $# -gt 0 ]]; do
         --dest|--workspace)
             DEST=${2:?$1 needs a directory}
             shift 2
+            ;;
+        --here)
+            HERE=1
+            shift
             ;;
         --org)
             ORG=${2:?--org needs a name}
@@ -149,6 +157,14 @@ default_dest() {
     fi
 }
 
+if [[ $HERE -eq 1 ]]; then
+    [[ -z $DEST ]] || die "--here and --dest are mutually exclusive"
+    if [[ $(basename -- "$PWD") == equislinux ]]; then
+        DEST=$PWD
+    else
+        DEST="$PWD/equislinux"
+    fi
+fi
 if [[ -z $DEST ]]; then
     DEST=$(default_dest)
 fi
