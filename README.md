@@ -60,6 +60,9 @@ dependent and easy to commit by accident. See
 sudo ./bin/equislinux-sudo status
 sudo ./bin/equislinux-sudo remove
 
+# Legacy aliases from xlnux-sudo.sh are accepted:
+#   --status, --remove, --create (create = install --apply)
+
 # Plan a signing key, then generate it outside any git worktree
 ./bin/equislinux-keygen --dry-run
 ./bin/equislinux-keygen                 # passphrase-protected (default)
