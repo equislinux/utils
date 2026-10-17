@@ -67,7 +67,7 @@ On a machine without the repository (the script is standalone):
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/equislinux/utils/main/bin/equislinux-clone \
+  https://github.com/equislinux/utils/raw/refs/heads/main/bin/equislinux-clone \
   -o /tmp/equislinux-clone
 bash /tmp/equislinux-clone --dest "$HOME/repos/equislinux"
 ```
@@ -76,7 +76,7 @@ Or directly through a pipe:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/equislinux/utils/main/bin/equislinux-clone \
+  https://github.com/equislinux/utils/raw/refs/heads/main/bin/equislinux-clone \
   | bash -s -- --dest "$HOME/repos/equislinux"
 ```
 
