@@ -11,6 +11,10 @@ tokens or passwords in the script.
 # From this repository
 ./bin/equislinux-clone --dest ~/repos/equislinux
 
+# From the directory that should become the workspace
+cd ~/repos/equislinux
+./bin/equislinux-clone --here
+
 # Public repositories only
 ./bin/equislinux-clone --dest ~/Documents/equislinux --no-private
 
@@ -19,7 +23,10 @@ tokens or passwords in the script.
 ```
 
 The destination must be named `equislinux`; the script creates it and writes
-the `.equislinux-workspace` marker if missing.
+the `.equislinux-workspace` marker if missing. `--here` uses the current
+directory when its basename is already `equislinux`; otherwise it creates
+`./equislinux` inside the current directory. It cannot be combined with
+`--dest`.
 
 ## Remote use
 
@@ -83,6 +90,7 @@ With no `--dest`, the destination is chosen from:
 
 ```
 --dest DIR / --workspace DIR   workspace root (must be named equislinux)
+--here                         current directory, or ./equislinux inside it
 --org NAME                     GitHub organization (default: equislinux)
 --no-private / --public-only   skip private repositories
 --no-local-branches            only fetch origin/* refs
