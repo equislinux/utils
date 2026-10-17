@@ -118,6 +118,13 @@ sudo ./bin/equislinux-sudo remove
 ./bin/equislinux-keygen --no-passphrase # development/automation only
 ```
 
+Detailed guides:
+
+- Workspace discovery and moves: [`docs/workspace-layout.md`](docs/workspace-layout.md)
+- Clone and refresh: [`docs/cloning.md`](docs/cloning.md)
+- Sudo rules: [`docs/sudo.md`](docs/sudo.md)
+- Signing key: [`docs/keygen.md`](docs/keygen.md)
+
 The sudo rules cover only the scripts that need root:
 
 - `scripts/test/generations-btrfs.sh`
