@@ -34,7 +34,7 @@ The script is standalone and can be fetched and executed on a new machine:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/equislinux/utils/main/bin/equislinux-clone \
+  https://github.com/equislinux/utils/raw/refs/heads/main/bin/equislinux-clone \
   -o /tmp/equislinux-clone
 bash /tmp/equislinux-clone --dest "$HOME/repos/equislinux"
 ```

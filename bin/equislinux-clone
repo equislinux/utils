@@ -56,7 +56,7 @@ Branches:
   not recreated.
 
 Remote use (no checkout needed):
-  curl -fsSL https://raw.githubusercontent.com/equislinux/utils/main/bin/equislinux-clone \
+  curl -fsSL https://github.com/equislinux/utils/raw/refs/heads/main/bin/equislinux-clone \
     | bash -s -- --dest "$HOME/repos/equislinux"
 
 Examples:
