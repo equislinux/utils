@@ -1,0 +1,14 @@
+# Local editor/OS noise
+*.swp
+.DS_Store
+
+# Never commit key material or credentials
+keys/
+*.gpg
+*.key
+*.pem
+.env
+auth.json
+
+# Generated test output
+/out/

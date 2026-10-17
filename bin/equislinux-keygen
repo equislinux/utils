@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# Generate the signing key material for the EquisLinux [x] repository.
+# The private keyring is written outside any git worktree, under the
+# workspace by default.
+set -euo pipefail
+
+SELF=$(readlink -f -- "${BASH_SOURCE[0]}")
+UTILS_ROOT=$(cd -- "$(dirname -- "$SELF")/.." && pwd)
+# shellcheck source=../lib/common.sh
+source "$UTILS_ROOT/lib/common.sh"
+
+KEY_NAME=${X_KEY_NAME:-X Linux Repository}
+KEY_EMAIL=${X_KEY_EMAIL:-dev@xscriptor.com}
+KEYS_DIR=${X_KEYS_DIR:-}
+PROTECT=1
+FORCE=0
+DRY_RUN=0
+EXPIRY=0
+WORKSPACE_ARG=
+
+usage() {
+    cat <<'EOF'
+Usage: equislinux-keygen [options]
+
+Generate an ed25519 signing key and its public/revocation material. By
+default the key is passphrase-protected; use --no-passphrase only for a
+development/automation key.
+
+Options:
+  --out DIR            Keys directory (default: <workspace>/keys).
+  --name NAME          User ID name (default: X Linux Repository).
+  --email EMAIL        User ID email (default: dev@xscriptor.com).
+  --expiry VALUE       GPG expiry (default: 0 = never; examples: 2y, 6m).
+  --protect            Protect the key with a passphrase (default).
+  --no-passphrase      Generate an unprotected key (development only).
+  --force              Move an existing keys directory to a timestamped
+                       backup and generate a new key.
+  --dry-run            Print the plan without writing anything.
+  --workspace PATH     Override workspace discovery.
+  -h, --help           Show this help.
+
+Output (mode 0700 directory):
+  gnupg/               GNUPGHOME with the secret key        (never share)
+  signing.pub          ASCII public key                     (share)
+  trustedkeys.gpg      binary keyring                       (share)
+  revoke.asc           revocation certificate                (keep separate)
+  env.sh               GNUPGHOME + X_REPO_SIGN_KEY          (private)
+  README.md            backup and rotation notes
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --out)
+            KEYS_DIR=${2:?--out needs a directory}
+            shift 2
+            ;;
+        --name)
+            KEY_NAME=${2:?--name needs a value}
+            shift 2
+            ;;
+        --email)
+            KEY_EMAIL=${2:?--email needs a value}
+            shift 2
+            ;;
+        --expiry)
+            EXPIRY=${2:?--expiry needs a value}
+            shift 2
+            ;;
+        --protect)
+            PROTECT=1
+            shift
+            ;;
+        --no-passphrase)
+            PROTECT=0
+            shift
+            ;;
+        --force)
+            FORCE=1
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        --workspace)
+            WORKSPACE_ARG=${2:?--workspace needs a path}
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            x_die "unknown option: $1 (see --help)"
+            ;;
+    esac
+done
+
+[[ $EUID -ne 0 ]] || x_die "do not run this as root; keys must be owned by your user"
+[[ -n $KEY_NAME ]] || x_die "key name cannot be empty"
+[[ -n $KEY_EMAIL ]] || x_die "key email cannot be empty"
+x_have gpg || x_die "gpg is not installed"
+
+WS=$(x_require_workspace "$WORKSPACE_ARG") || exit 1
+if [[ -z $KEYS_DIR ]]; then
+    KEYS_DIR="$WS/keys"
+fi
+KEYS_DIR=$(x_abs_path "$KEYS_DIR")
+
+if x_in_git_worktree "$(dirname -- "$KEYS_DIR")"; then
+    x_die "refusing to write keys inside a git worktree: $KEYS_DIR"
+fi
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    x_info "workspace: $WS"
+    x_info "keys directory: $KEYS_DIR"
+    x_info "user id: $KEY_NAME <$KEY_EMAIL>"
+    x_info "expiry: $EXPIRY"
+    if [[ $PROTECT -eq 1 ]]; then
+        x_info "protection: passphrase"
+    else
+        x_info "protection: none (development/automation)"
+    fi
+    x_info "force: $FORCE"
+    exit 0
+fi
+
+if [[ -d $KEYS_DIR ]] && [[ -n $(find "$KEYS_DIR" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+    [[ $FORCE -eq 1 ]] || x_die "keys directory is not empty: $KEYS_DIR (use --force to rotate)"
+    backup="${KEYS_DIR}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+    [[ -e $backup ]] && backup="${backup}.$$"
+    mv -- "$KEYS_DIR" "$backup"
+    x_info "moved previous keys to: $backup"
+fi
+
+umask 077
+mkdir -p -- "$KEYS_DIR"
+chmod 700 "$KEYS_DIR"
+
+export GNUPGHOME="$KEYS_DIR/gnupg"
+mkdir -p -- "$GNUPGHOME"
+chmod 700 "$GNUPGHOME"
+if [[ -n ${GPG_TTY:-} ]]; then :; elif tty -s 2>/dev/null; then export GPG_TTY; GPG_TTY=$(tty); fi
+
+UID_STR="$KEY_NAME <$KEY_EMAIL>"
+x_info "generating ed25519 signing key: $UID_STR"
+if [[ $PROTECT -eq 1 ]]; then
+    gpg --quick-generate-key "$UID_STR" ed25519 sign "$EXPIRY"
+else
+    gpg --batch --passphrase '' --quick-generate-key "$UID_STR" ed25519 sign "$EXPIRY"
+    x_warn "generated an UNPROTECTED key (development/automation only)"
+fi
+
+FPR=$(gpg --list-secret-keys --with-colons "$KEY_EMAIL" | awk -F: '/^fpr:/{print $10; exit}')
+[[ -n $FPR ]] || x_die "could not read the new key fingerprint"
+
+x_info "exporting public key and keyring"
+gpg --batch --yes --armor --export "$FPR" >"$KEYS_DIR/signing.pub"
+gpg --batch --yes --export "$FPR" >"$KEYS_DIR/trustedkeys.gpg"
+
+x_info "exporting revocation certificate"
+REV=$(find "$GNUPGHOME/openpgp-revocs.d" -maxdepth 1 -type f -name '*.rev' -print -quit 2>/dev/null || true)
+if [[ -n $REV && -s $REV ]]; then
+    cp -f -- "$REV" "$KEYS_DIR/revoke.asc"
+else
+    if ! printf '0\ny\n' | gpg --command-fd 0 --status-fd 2 --gen-revoke "$FPR" >"$KEYS_DIR/revoke.asc" 2>/dev/null; then
+        x_die "could not generate revoke.asc (run: gpg --gen-revoke $FPR)"
+    fi
+fi
+[[ -s $KEYS_DIR/revoke.asc ]] || x_die "revoke.asc is empty"
+chmod 600 "$KEYS_DIR/revoke.asc"
+
+cat >"$KEYS_DIR/env.sh" <<EOF
+# shellcheck shell=sh
+# Source this file before signing: source keys/env.sh
+export GNUPGHOME="$GNUPGHOME"
+export X_REPO_SIGN_KEY="$FPR"
+EOF
+chmod 600 "$KEYS_DIR/env.sh"
+
+x_info "self-testing the key"
+SELF_TEST=$(mktemp "$KEYS_DIR/.self-test.XXXXXX")
+printf 'equislinux key self-test\n' >"$SELF_TEST"
+gpg --batch --yes --local-user "$FPR" --detach-sign "$SELF_TEST"
+gpg --batch --verify "$SELF_TEST.sig" "$SELF_TEST" >/dev/null
+rm -f -- "$SELF_TEST" "$SELF_TEST.sig"
+
+cat >"$KEYS_DIR/README.md" <<EOF
+# keys/ — signing material for the [x] repository
+
+Generated by \`equislinux-keygen\` on $(date -u +%Y-%m-%dT%H:%M:%SZ).
+
+- Fingerprint: \`$FPR\`
+- Key: $KEY_NAME <$KEY_EMAIL> (ed25519, signing only)
+- Expiry: $EXPIRY
+- Passphrase: $(if [[ $PROTECT -eq 1 ]]; then echo "yes (interactive pinentry)"; else echo "NO (development/automation only)"; fi)
+
+## Files
+
+| File | Purpose | Share |
+|------|---------|-------|
+| \`gnupg/\` | secret key + local keyring (GNUPGHOME) | **never** |
+| \`signing.pub\` | ASCII public key | yes |
+| \`trustedkeys.gpg\` | binary keyring | yes |
+| \`revoke.asc\` | revocation certificate | keep separately |
+| \`env.sh\` | GNUPGHOME + X_REPO_SIGN_KEY | no |
+
+## Backup
+
+Copy \`gnupg/\` and \`revoke.asc\` to an offline medium. Test the backup by
+pointing GNUPGHOME at a restored copy and listing the secret key. This
+directory is deliberately outside every git worktree.
+
+## Signing
+
+\`\`\`bash
+source keys/env.sh
+(cd x-repo && ./build-packages.sh --index-only)
+\`\`\`
+
+## Rotation
+
+See the private operations runbook. If this key is compromised, import
+\`revoke.asc\`, publish the revocation, generate a new key and follow the
+keyring transition procedure.
+EOF
+chmod 644 "$KEYS_DIR/signing.pub" "$KEYS_DIR/trustedkeys.gpg" "$KEYS_DIR/README.md"
+
+echo
+x_info "done"
+x_info "fingerprint: $FPR"
+x_info "keys directory: $KEYS_DIR"
+x_info "next: source \"$KEYS_DIR/env.sh\""

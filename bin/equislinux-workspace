@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Locate, initialize, or pin the EquisLinux workspace.
+set -euo pipefail
+
+SELF=$(readlink -f -- "${BASH_SOURCE[0]}")
+UTILS_ROOT=$(cd -- "$(dirname -- "$SELF")/.." && pwd)
+# shellcheck source=../lib/common.sh
+source "$UTILS_ROOT/lib/common.sh"
+
+usage() {
+    cat <<'EOF'
+Usage: equislinux-workspace [show|init|set-default] [DIR]
+
+Commands:
+  show                 Print the detected workspace path (default).
+  init [DIR]           Create the workspace marker in DIR (default: parent
+                       of this repository). DIR must be named "equislinux".
+  set-default          Save the detected workspace in
+                       ${XDG_CONFIG_HOME:-~/.config}/equislinux/workspace.
+
+Environment:
+  X_WORKSPACE          Explicit workspace path (highest priority).
+  XDG_CONFIG_HOME      Config base directory (default: ~/.config).
+
+Discovery order: --workspace/X_WORKSPACE, config file, parent of this
+repository, then common locations under $HOME.
+EOF
+}
+
+case "${1:-show}" in
+    show)
+        x_require_workspace
+        ;;
+    init)
+        dir=${2:-"$UTILS_ROOT/.."}
+        dir=$(realpath -m -- "$dir")
+        [[ -d $dir ]] || x_die "not a directory: $dir"
+        [[ $(basename -- "$dir") == equislinux ]] || x_die "workspace directory must be named 'equislinux': $dir"
+        marker="$dir/.equislinux-workspace"
+        if [[ -e $marker ]]; then
+            x_info "marker already exists: $marker"
+        else
+            printf '# EquisLinux workspace marker (schema 1)\nname=equislinux\n' >"$marker"
+            x_info "created $marker"
+        fi
+        x_is_workspace "$dir" || x_die "workspace validation failed: $dir"
+        ;;
+    set-default)
+        ws=$(x_require_workspace)
+        cfg=$(x_config_file)
+        mkdir -p -- "$(dirname -- "$cfg")"
+        printf '%s\n' "$ws" >"$cfg"
+        chmod 0644 "$cfg"
+        x_info "default workspace: $ws"
+        x_info "config: $cfg"
+        ;;
+    -h|--help|help)
+        usage
+        ;;
+    *)
+        x_die "unknown command: $1 (see --help)"
+        ;;
+esac

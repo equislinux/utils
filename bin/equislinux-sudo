@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+# Install or remove the narrow NOPASSWD rules used by the EquisLinux
+# release/validation scripts. Paths are resolved from the workspace, so the
+# rules keep working when the workspace moves.
+set -euo pipefail
+
+SELF=$(readlink -f -- "${BASH_SOURCE[0]}")
+UTILS_ROOT=$(cd -- "$(dirname -- "$SELF")/.." && pwd)
+# shellcheck source=../lib/common.sh
+source "$UTILS_ROOT/lib/common.sh"
+
+SUDOERS_DIR=/etc/sudoers.d
+SUDOERS_FILE="$SUDOERS_DIR/equislinux"
+LEGACY_FILE="$SUDOERS_DIR/xlnux-sprint"
+BACKUP_DIR=/var/backups/equislinux
+
+ACTION=install
+APPLY=0
+KEEP_LEGACY=0
+STRICT=0
+WORKSPACE_ARG=
+ORIG_ARGS=("$@")
+
+if [[ -n ${SUDO_USER:-} ]]; then
+    TARGET_USER=$SUDO_USER
+else
+    TARGET_USER=$(id -un)
+fi
+if [[ $TARGET_USER == root && $EUID -eq 0 ]]; then
+    TARGET_USER=$(id -nu 1000 2>/dev/null || printf 'root\n')
+fi
+
+usage() {
+    cat <<'EOF'
+Usage: equislinux-sudo [install|remove|status] [options]
+
+Install (dry-run by default) a set of NOPASSWD rules for the release and
+validation scripts in the EquisLinux workspace.
+
+Options:
+  --apply              Actually write /etc/sudoers.d/equislinux (needs sudo).
+  --dry-run            Print the proposed rules without changing anything.
+  --workspace PATH     Override workspace discovery.
+  --user USER          Grant the rules to USER (default: SUDO_USER or you).
+  --keep-legacy        Do not remove /etc/sudoers.d/xlnux-sprint.
+  --strict             Refuse targets that are writable by the target user.
+  -h, --help           Show this help.
+
+Security note: NOPASSWD on a script that the target user can edit is
+equivalent to passwordless root. This utility warns about it; it is meant
+for a single-user development machine, not as a security boundary.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        install|remove|status)
+            ACTION=$1
+            shift
+            ;;
+        --apply)
+            APPLY=1
+            shift
+            ;;
+        --dry-run)
+            APPLY=0
+            shift
+            ;;
+        --workspace)
+            WORKSPACE_ARG=${2:?--workspace needs a path}
+            shift 2
+            ;;
+        --user)
+            TARGET_USER=${2:?--user needs a name}
+            shift 2
+            ;;
+        --keep-legacy)
+            KEEP_LEGACY=1
+            shift
+            ;;
+        --strict)
+            STRICT=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            x_die "unknown option: $1 (see --help)"
+            ;;
+    esac
+done
+
+id -u "$TARGET_USER" >/dev/null 2>&1 || x_die "unknown user: $TARGET_USER"
+BASH_BIN=$(command -v bash) || x_die "bash not found"
+BASH_BIN=$(realpath -e -- "$BASH_BIN")
+
+WS=$(x_require_workspace "$WORKSPACE_ARG") || exit 1
+REL_TARGETS=(
+    scripts/test/generations-btrfs.sh
+    x/xbuild.sh
+    wsl/publish-sf.sh
+    wsl/build-rootfs.sh
+)
+TARGETS=()
+for rel in "${REL_TARGETS[@]}"; do
+    [[ -e "$WS/$rel" ]] || x_die "missing target: $WS/$rel"
+    TARGETS+=("$(realpath -e -- "$WS/$rel")")
+done
+
+USER_WRITABLE=0
+for p in "${TARGETS[@]}"; do
+    [[ -w $p ]] && USER_WRITABLE=1
+done
+if [[ $USER_WRITABLE -eq 1 ]]; then
+    x_warn "one or more targets are writable by '$TARGET_USER'"
+    x_warn "NOPASSWD on a user-writable script is equivalent to passwordless root"
+    if [[ $STRICT -eq 1 ]]; then
+        x_die "refusing user-writable targets in --strict mode"
+    fi
+fi
+
+build_rules() {
+    local p
+    printf '# Managed by equislinux-sudo. Workspace: %s\n' "$WS"
+    printf '# Generated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '# WARNING: NOPASSWD on user-writable scripts equals passwordless root.\n'
+    for p in "${TARGETS[@]}"; do
+        printf '%s ALL=(root) NOPASSWD: %s %s\n' "$TARGET_USER" "$BASH_BIN" "$p"
+        if [[ -x $p ]]; then
+            printf '%s ALL=(root) NOPASSWD: %s\n' "$TARGET_USER" "$p"
+        fi
+    done
+}
+
+backup_file() {
+    local f=$1 b
+    [[ -f $f ]] || return 0
+    install -d -m 0700 "$BACKUP_DIR"
+    b="$BACKUP_DIR/$(basename -- "$f").$(date -u +%Y%m%dT%H%M%SZ).$$"
+    cp -a -- "$f" "$b"
+    printf '%s\n' "$b"
+}
+
+ensure_root() {
+    if [[ $EUID -ne 0 ]]; then
+        exec sudo -- "$SELF" "${ORIG_ARGS[@]}"
+    fi
+}
+
+install_rules() {
+    ensure_root
+    local tmp rules backup="" had=0 lb
+    tmp=$(mktemp)
+    rules=$(build_rules)
+    printf '%s\n' "$rules" >"$tmp"
+    if ! visudo -cf "$tmp" >/dev/null; then
+        rm -f "$tmp"
+        x_die "visudo rejected the generated rules"
+    fi
+    if [[ -f $SUDOERS_FILE ]]; then
+        backup=$(backup_file "$SUDOERS_FILE")
+        had=1
+    fi
+    install -m 0440 -o root -g root "$tmp" "$SUDOERS_FILE"
+    rm -f "$tmp"
+    if ! visudo -c >/dev/null; then
+        rm -f "$SUDOERS_FILE"
+        [[ $had -eq 1 ]] && cp -a -- "$backup" "$SUDOERS_FILE"
+        x_die "visudo rejected the installed rules; previous state restored"
+    fi
+    if [[ $KEEP_LEGACY -eq 0 && -f $LEGACY_FILE ]]; then
+        lb=$(backup_file "$LEGACY_FILE")
+        rm -f "$LEGACY_FILE"
+        x_info "removed legacy rules: $LEGACY_FILE (backup: $lb)"
+    fi
+    x_info "installed: $SUDOERS_FILE"
+    x_info "target user: $TARGET_USER"
+    for p in "${TARGETS[@]}"; do
+        x_info "  $p"
+    done
+}
+
+remove_rules() {
+    ensure_root
+    local f b found=0
+    for f in "$SUDOERS_FILE" "$LEGACY_FILE"; do
+        if [[ -f $f ]]; then
+            found=1
+            b=$(backup_file "$f")
+            rm -f "$f"
+            x_info "removed: $f (backup: $b)"
+        fi
+    done
+    visudo -c >/dev/null || x_die "visudo check failed after removal"
+    if [[ $found -eq 0 ]]; then
+        x_info "no EquisLinux NOPASSWD rules found"
+    else
+        x_info "no EquisLinux NOPASSWD rules remain"
+    fi
+}
+
+show_status() {
+    ensure_root
+    local f
+    for f in "$SUDOERS_FILE" "$LEGACY_FILE"; do
+        if [[ -f $f ]]; then
+            printf '== %s\n' "$f"
+            ls -l "$f"
+            cat "$f"
+        else
+            printf 'inactive: %s\n' "$f"
+        fi
+    done
+    visudo -c
+}
+
+case "$ACTION" in
+    install)
+        if [[ $APPLY -eq 1 ]]; then
+            install_rules
+        else
+            x_info "action: install (dry-run)"
+            x_info "workspace: $WS"
+            x_info "target user: $TARGET_USER"
+            x_info "sudoers file: $SUDOERS_FILE"
+            x_info "--- proposed rules ---"
+            build_rules
+            x_info "--- end ---"
+            x_info "run with --apply to install (requires sudo)"
+        fi
+        ;;
+    remove)
+        remove_rules
+        ;;
+    status)
+        show_status
+        ;;
+esac
