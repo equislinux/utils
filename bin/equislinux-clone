@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+# Clone (or refresh) every repository of an EquisLinux organization into a
+# workspace named "equislinux". Standalone: it can run from a checkout or
+# directly from a URL, using the local `gh` session for private repositories.
+set -euo pipefail
+
+ORG=equislinux
+DEST=""
+INCLUDE_PRIVATE=1
+LOCAL_BRANCHES=1
+DRY_RUN=0
+ONLY=()
+FAILED=0
+
+log() { printf '[clone] %s\n' "$*"; }
+warn() { printf '[clone] warning: %s\n' "$*" >&2; }
+die() { printf '[clone] error: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+Usage: equislinux-clone [options]
+
+Clone or refresh all repositories of the EquisLinux organization into a
+workspace directory named "equislinux". Existing repositories are fetched
+with --all --prune --tags; they are not pulled or reset.
+
+Options:
+  --dest DIR           Workspace directory (must be named "equislinux").
+  --workspace DIR      Alias for --dest.
+  --org NAME           GitHub organization (default: equislinux).
+  --no-private         Clone public repositories only.
+  --public-only        Alias for --no-private.
+  --no-local-branches  Do not create local tracking branches for every
+                       remote branch (clone still fetches them).
+  --only NAME          Clone/refresh only NAME (repeatable).
+  --dry-run            Show what would be cloned/fetched; no writes.
+  -h, --help           Show this help.
+
+Defaults:
+  Destination: $X_WORKSPACE, the config file
+  ~/.config/equislinux/workspace, the parent of this checkout, the current
+  directory if it is named equislinux, or a common path under $HOME.
+
+Private repositories:
+  They are cloned when the local `gh` session can see them. The script never
+  reads or stores tokens; run `gh auth login` first. Use --no-private to keep
+  them out. `gh` uses its configured git protocol (https is recommended).
+
+Branches:
+  `git clone` fetches every branch currently on the remote. By default the
+  script also creates local tracking branches for each one; pass
+  --no-local-branches to leave only origin/* refs. Deleted remote branches are
+  not recreated.
+
+Remote use (no checkout needed):
+  curl -fsSL https://raw.githubusercontent.com/equislinux/utils/main/bin/equislinux-clone \
+    | bash -s -- --dest "$HOME/repos/equislinux"
+
+Examples:
+  ./bin/equislinux-clone --dest ~/repos/equislinux
+  ./bin/equislinux-clone --dest ~/Documents/equislinux --no-private
+  ./bin/equislinux-clone --only ops --dest /tmp/test/equislinux
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dest|--workspace)
+            DEST=${2:?$1 needs a directory}
+            shift 2
+            ;;
+        --org)
+            ORG=${2:?--org needs a name}
+            shift 2
+            ;;
+        --no-private|--public-only)
+            INCLUDE_PRIVATE=0
+            shift
+            ;;
+        --no-local-branches)
+            LOCAL_BRANCHES=0
+            shift
+            ;;
+        --only)
+            ONLY+=("${2:?--only needs a repository name}")
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option: $1 (see --help)"
+            ;;
+    esac
+done
+
+command -v gh >/dev/null 2>&1 || die "gh is not installed; install GitHub CLI and run 'gh auth login'"
+command -v git >/dev/null 2>&1 || die "git is not installed"
+gh auth status >/dev/null 2>&1 || die "gh is not authenticated; run 'gh auth login'"
+
+default_dest() {
+    local cfg line self dir candidate
+    if [[ -n ${X_WORKSPACE:-} ]]; then
+        printf '%s\n' "$X_WORKSPACE"
+        return
+    fi
+    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/equislinux/workspace"
+    if [[ -f $cfg ]]; then
+        while IFS= read -r line; do
+            [[ -z $line || $line == \#* ]] && continue
+            printf '%s\n' "$line"
+            return
+        done <"$cfg"
+    fi
+    # When executed from <workspace>/utils/bin, use the workspace parent.
+    if [[ -n ${BASH_SOURCE[0]:-} && ${BASH_SOURCE[0]} != /dev/fd/* ]]; then
+        self=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)
+        if [[ -n $self ]]; then
+            dir=$(dirname -- "$self")
+            if [[ $(basename -- "$dir") == bin ]]; then
+                candidate=$(dirname -- "$dir")
+                if [[ $(basename -- "$candidate") == utils ]]; then
+                    candidate=$(dirname -- "$candidate")
+                    if [[ $(basename -- "$candidate") == equislinux ]]; then
+                        printf '%s\n' "$candidate"
+                        return
+                    fi
+                fi
+            fi
+        fi
+    fi
+    if [[ $(basename -- "$PWD") == equislinux ]]; then
+        printf '%s\n' "$PWD"
+        return
+    fi
+    if [[ -d "$HOME/Documents/repos" ]]; then
+        printf '%s\n' "$HOME/Documents/repos/equislinux"
+    elif [[ -d "$HOME/repos" ]]; then
+        printf '%s\n' "$HOME/repos/equislinux"
+    elif [[ -d "$HOME/Documents" ]]; then
+        printf '%s\n' "$HOME/Documents/equislinux"
+    else
+        printf '%s\n' "$HOME/equislinux"
+    fi
+}
+
+if [[ -z $DEST ]]; then
+    DEST=$(default_dest)
+fi
+case "$DEST" in
+    "~") DEST=$HOME ;;
+    "~/"*) DEST="$HOME/${DEST#"~/"}" ;;
+esac
+DEST=$(realpath -m -- "$DEST")
+[[ $(basename -- "$DEST") == equislinux ]] || die "workspace directory must be named 'equislinux': $DEST"
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    log "dry-run; workspace: $DEST"
+else
+    mkdir -p -- "$DEST"
+    if [[ ! -f "$DEST/.equislinux-workspace" ]]; then
+        printf '# EquisLinux workspace marker (schema 1)\nname=equislinux\n' >"$DEST/.equislinux-workspace"
+        log "created workspace marker: $DEST/.equislinux-workspace"
+    fi
+fi
+
+rows=$(gh repo list "$ORG" --limit 1000 --json name,visibility --jq '.[] | "\(.name) \(.visibility)"' | sort)
+[[ -n $rows ]] || die "no repositories found for organization '$ORG'"
+
+repo_selected() {
+    local name=$1 wanted
+    ((${#ONLY[@]} == 0)) && return 0
+    for wanted in "${ONLY[@]}"; do
+        [[ $wanted == "$name" ]] && return 0
+    done
+    return 1
+}
+
+create_local_branches() {
+    local path=$1 ref branch
+    while IFS= read -r ref; do
+        branch=${ref#refs/remotes/origin/}
+        [[ $branch == HEAD ]] && continue
+        if git -C "$path" show-ref --verify --quiet "refs/heads/$branch"; then
+            continue
+        fi
+        if git -C "$path" branch --track "$branch" "origin/$branch" >/dev/null 2>&1; then
+            log "  + local branch: $branch"
+        else
+            warn "could not create local branch '$branch' in $path"
+        fi
+    done < <(git -C "$path" for-each-ref --format='%(refname)' refs/remotes/origin/)
+}
+
+remote_branch_count() {
+    git -C "$1" for-each-ref --format='%(refname)' refs/remotes/origin/ \
+        | grep -vc 'refs/remotes/origin/HEAD$' || true
+}
+
+while IFS=' ' read -r name visibility; do
+    [[ -n $name ]] || continue
+    repo_selected "$name" || continue
+    if [[ $visibility != PUBLIC && $INCLUDE_PRIVATE -eq 0 ]]; then
+        log "skip $name ($visibility; --no-private)"
+        continue
+    fi
+
+    path="$DEST/$name"
+    if [[ -d "$path/.git" ]]; then
+        if [[ $DRY_RUN -eq 1 ]]; then
+            log "would fetch $name"
+            continue
+        fi
+        if git -C "$path" fetch --all --prune --tags --quiet; then
+            log "fetched $name"
+        else
+            warn "fetch failed: $name"
+            FAILED=$((FAILED + 1))
+            continue
+        fi
+    elif [[ -e "$path" ]]; then
+        warn "path exists but is not a git repository: $path"
+        FAILED=$((FAILED + 1))
+        continue
+    else
+        if [[ $DRY_RUN -eq 1 ]]; then
+            log "would clone $name ($visibility)"
+            continue
+        fi
+        if gh repo clone "$ORG/$name" "$path" -- --quiet; then
+            log "cloned $name ($visibility)"
+        else
+            warn "clone failed: $name"
+            FAILED=$((FAILED + 1))
+            continue
+        fi
+    fi
+
+    if [[ $LOCAL_BRANCHES -eq 1 && $DRY_RUN -eq 0 ]]; then
+        create_local_branches "$path"
+    fi
+    if [[ $DRY_RUN -eq 0 ]]; then
+        log "  branches: $(remote_branch_count "$path")"
+    fi
+done <<<"$rows"
+
+if [[ $FAILED -ne 0 ]]; then
+    die "$FAILED repository operation(s) failed"
+fi
+log "workspace ready: $DEST"
+if [[ $INCLUDE_PRIVATE -eq 0 ]]; then
+    log "private repositories skipped (--no-private)"
+else
+    log "private repositories included when visible to the current gh session"
+fi
