@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# Restore the EquisLinux signing keyring and SourceForge SSH key from an
+# offline backup. Standalone: it can run from utils/bin or from a copy on the
+# backup disk. Dry-run by default; use --apply to write.
+set -euo pipefail
+
+BACKUP_DIR=""
+WORKSPACE=""
+SSH_DIR="$HOME/.ssh"
+KEYS_TAR=""
+SSH_TAR=""
+APPLY=0
+FORCE=0
+DO_KEYS=1
+DO_SSH=1
+REWRITE_ENV=1
+SKIP_CHECKSUM=0
+TMP_DIR=""
+
+trap 'if [[ -n ${TMP_DIR:-} ]]; then rm -rf -- "$TMP_DIR"; fi' EXIT
+
+log() { printf '[restore] %s\n' "$*"; }
+warn() { printf '[restore] warning: %s\n' "$*" >&2; }
+die() { printf '[restore] error: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+Usage: equislinux-restore [options]
+
+Restore the signing keyring (<workspace>/keys) and the SourceForge SSH key
+from an offline backup. Nothing is written unless --apply is given.
+
+Options:
+  --backup-dir DIR     Directory containing keys-*.tar.gz / ssh-*.tar.gz
+                       (default: the current directory if it has them).
+  --workspace DIR      Workspace root (must be named equislinux).
+  --ssh-dir DIR        SSH directory (default: ~/.ssh).
+  --keys-tar FILE      Explicit keyring archive.
+  --ssh-tar FILE       Explicit SSH key archive.
+  --no-keys            Skip the keyring.
+  --no-ssh             Skip the SourceForge SSH key.
+  --no-rewrite-env     Do not update GNUPGHOME in keys/env.sh.
+  --skip-checksum      Allow archives without a .sha256 file.
+  --force              Move existing targets to *.pre-restore.<timestamp>.
+  --apply              Perform the restore.
+  --dry-run            Print the plan without writing (default).
+  -h, --help           Show this help.
+
+Run this as your normal user, not as root. The SSH private key is installed
+with mode 0600; the keyring directory with 0700.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --backup-dir)
+            BACKUP_DIR=${2:?--backup-dir needs a directory}
+            shift 2
+            ;;
+        --workspace)
+            WORKSPACE=${2:?--workspace needs a directory}
+            shift 2
+            ;;
+        --ssh-dir)
+            SSH_DIR=${2:?--ssh-dir needs a directory}
+            shift 2
+            ;;
+        --keys-tar)
+            KEYS_TAR=${2:?--keys-tar needs a file}
+            shift 2
+            ;;
+        --ssh-tar)
+            SSH_TAR=${2:?--ssh-tar needs a file}
+            shift 2
+            ;;
+        --no-keys) DO_KEYS=0; shift ;;
+        --no-ssh) DO_SSH=0; shift ;;
+        --no-rewrite-env) REWRITE_ENV=0; shift ;;
+        --skip-checksum) SKIP_CHECKSUM=1; shift ;;
+        --force) FORCE=1; shift ;;
+        --apply) APPLY=1; shift ;;
+        --dry-run) APPLY=0; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "unknown option: $1 (see --help)" ;;
+    esac
+done
+
+(( DO_KEYS == 1 || DO_SSH == 1 )) || die "both --no-keys and --no-ssh were given"
+
+for c in tar sha256sum find install; do
+    command -v "$c" >/dev/null 2>&1 || die "required command not found: $c"
+done
+if [[ $DO_KEYS -eq 1 ]]; then
+    command -v gpg >/dev/null 2>&1 || die "required command not found: gpg"
+fi
+if [[ $DO_SSH -eq 1 ]]; then
+    command -v ssh-keygen >/dev/null 2>&1 || die "required command not found: ssh-keygen"
+fi
+
+if [[ -z $BACKUP_DIR ]]; then
+    if compgen -G "$PWD/keys-*.tar.gz" >/dev/null || compgen -G "$PWD/ssh-sourceforge-*.tar.gz" >/dev/null; then
+        BACKUP_DIR=$PWD
+    else
+        die "no backup directory given and no archives found in $PWD"
+    fi
+fi
+BACKUP_DIR=$(realpath -e -- "$BACKUP_DIR" 2>/dev/null) || die "backup directory not found"
+[[ -d $BACKUP_DIR ]] || die "not a directory: $BACKUP_DIR"
+
+default_workspace() {
+    local cfg line self dir candidate
+    if [[ -n ${X_WORKSPACE:-} ]]; then
+        printf '%s\n' "$X_WORKSPACE"
+        return
+    fi
+    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/equislinux/workspace"
+    if [[ -f $cfg ]]; then
+        while IFS= read -r line; do
+            [[ -z $line || $line == \#* ]] && continue
+            printf '%s\n' "$line"
+            return
+        done <"$cfg"
+    fi
+    if [[ -n ${BASH_SOURCE[0]:-} && ${BASH_SOURCE[0]} != /dev/fd/* ]]; then
+        self=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)
+        if [[ -n $self ]]; then
+            dir=$(dirname -- "$self")
+            if [[ $(basename -- "$dir") == bin ]]; then
+                candidate=$(dirname -- "$dir")
+                if [[ $(basename -- "$candidate") == utils ]]; then
+                    candidate=$(dirname -- "$candidate")
+                    if [[ $(basename -- "$candidate") == equislinux ]]; then
+                        printf '%s\n' "$candidate"
+                        return
+                    fi
+                fi
+            fi
+        fi
+    fi
+    if [[ $(basename -- "$PWD") == equislinux ]]; then
+        printf '%s\n' "$PWD"
+        return
+    fi
+    if [[ -d "$HOME/Documents/repos/equislinux" ]]; then
+        printf '%s\n' "$HOME/Documents/repos/equislinux"
+    elif [[ -d "$HOME/repos/equislinux" ]]; then
+        printf '%s\n' "$HOME/repos/equislinux"
+    elif [[ -d "$HOME/Documents/equislinux" ]]; then
+        printf '%s\n' "$HOME/Documents/equislinux"
+    else
+        printf '%s\n' "$HOME/equislinux"
+    fi
+}
+
+if [[ -z $WORKSPACE ]]; then
+    WORKSPACE=$(default_workspace)
+fi
+case "$WORKSPACE" in
+    "~") WORKSPACE=$HOME ;;
+    "~/"*) WORKSPACE="$HOME/${WORKSPACE#"~/"}" ;;
+esac
+WORKSPACE=$(realpath -m -- "$WORKSPACE")
+[[ $(basename -- "$WORKSPACE") == equislinux ]] || die "workspace directory must be named 'equislinux': $WORKSPACE"
+[[ -d $WORKSPACE ]] || die "workspace does not exist: $WORKSPACE (clone/create it first, or pass --workspace)"
+SSH_DIR=$(realpath -m -- "$SSH_DIR")
+
+newest_tar() {
+    local dir=$1 pattern=$2
+    find "$dir" -maxdepth 1 -type f -name "$pattern" -printf '%T@ %p\n' 2>/dev/null \
+        | sort -n | tail -1 | cut -d' ' -f2- || true
+}
+
+if [[ $DO_KEYS -eq 1 ]]; then
+    if [[ -z $KEYS_TAR ]]; then
+        KEYS_TAR=$(newest_tar "$BACKUP_DIR" 'keys-*.tar.gz')
+    fi
+    [[ -n $KEYS_TAR && -f $KEYS_TAR ]] || die "keyring archive not found (looked for keys-*.tar.gz)"
+    KEYS_TAR=$(realpath -e -- "$KEYS_TAR")
+fi
+if [[ $DO_SSH -eq 1 ]]; then
+    if [[ -z $SSH_TAR ]]; then
+        SSH_TAR=$(newest_tar "$BACKUP_DIR" 'ssh-sourceforge-*.tar.gz')
+    fi
+    [[ -n $SSH_TAR && -f $SSH_TAR ]] || die "SSH archive not found (looked for ssh-sourceforge-*.tar.gz)"
+    SSH_TAR=$(realpath -e -- "$SSH_TAR")
+fi
+
+verify_archive() {
+    local archive=$1 sum="${1}.sha256"
+    if [[ -f $sum ]]; then
+        (cd "$(dirname -- "$archive")" && sha256sum -c "$(basename -- "$sum")") || die "checksum failed: $archive"
+    elif [[ $SKIP_CHECKSUM -eq 1 ]]; then
+        warn "no checksum file for $archive; continuing (--skip-checksum)"
+    else
+        die "no checksum file for $archive (use --skip-checksum to override)"
+    fi
+    tar -tzf "$archive" >/dev/null || die "not a valid tar.gz: $archive"
+}
+
+if [[ $DO_KEYS -eq 1 ]]; then verify_archive "$KEYS_TAR"; fi
+if [[ $DO_SSH -eq 1 ]]; then verify_archive "$SSH_TAR"; fi
+
+keys_target="$WORKSPACE/keys"
+ssh_key="$SSH_DIR/id_ed25519_sourceforge"
+ssh_pub="$SSH_DIR/id_ed25519_sourceforge.pub"
+
+if [[ $DO_KEYS -eq 1 && -e $keys_target && $FORCE -eq 0 ]]; then
+    die "$keys_target already exists; use --force to move it aside"
+fi
+if [[ $DO_SSH -eq 1 ]]; then
+    if [[ -e $ssh_key || -e $ssh_pub ]] && [[ $FORCE -eq 0 ]]; then
+        die "$SSH_DIR already has the SourceForge key; use --force to move it aside"
+    fi
+fi
+
+if [[ $APPLY -eq 0 ]]; then
+    log "dry-run; workspace: $WORKSPACE"
+    if [[ $DO_KEYS -eq 1 ]]; then
+        log "would restore keyring: $KEYS_TAR -> $keys_target"
+    fi
+    if [[ $DO_SSH -eq 1 ]]; then
+        log "would restore SSH key: $SSH_TAR -> $SSH_DIR"
+    fi
+    if [[ -e $keys_target || -e $ssh_key ]]; then
+        log "existing targets would be moved aside (--force)"
+    fi
+    log "run with --apply to perform the restore"
+    exit 0
+fi
+
+if [[ $DO_KEYS -eq 1 ]]; then
+    mkdir -p -- "$WORKSPACE"
+    if [[ -e $keys_target ]]; then
+        backup_target="${keys_target}.pre-restore.$(date -u +%Y%m%dT%H%M%SZ)"
+        mv -- "$keys_target" "$backup_target"
+        log "moved existing keyring to $backup_target"
+    fi
+    umask 077
+    tar -C "$WORKSPACE" -xpf "$KEYS_TAR"
+    [[ -d $keys_target ]] || die "archive did not create $keys_target"
+    chmod 700 "$keys_target"
+    if [[ -d "$keys_target/gnupg" ]]; then
+        chmod 700 "$keys_target/gnupg"
+    fi
+    for f in "$keys_target/env.sh" "$keys_target/revoke.asc"; do
+        if [[ -f $f ]]; then
+            chmod 600 "$f"
+        fi
+    done
+    for f in "$keys_target/signing.pub" "$keys_target/trustedkeys.gpg" "$keys_target/README.md"; do
+        if [[ -f $f ]]; then
+            chmod 644 "$f"
+        fi
+    done
+    if [[ $REWRITE_ENV -eq 1 && -f "$keys_target/env.sh" ]]; then
+        tmp_env=$(mktemp "$keys_target/.env.XXXXXX")
+        if awk -v dir="$keys_target/gnupg" '
+            /^export GNUPGHOME=/ { print "export GNUPGHOME=\"" dir "\""; found=1; next }
+            { print }
+            END { exit(found ? 0 : 3) }
+        ' "$keys_target/env.sh" >"$tmp_env"; then
+            chmod 600 "$tmp_env"
+            mv -- "$tmp_env" "$keys_target/env.sh"
+            log "updated GNUPGHOME in keys/env.sh"
+        else
+            rm -f -- "$tmp_env"
+            warn "keys/env.sh has no GNUPGHOME line; not rewritten"
+        fi
+    fi
+    count=$(GNUPGHOME="$keys_target/gnupg" gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/{c++} END{print c+0}' || true)
+    [[ $count -gt 0 ]] || die "restored keyring has no secret keys"
+    log "keyring restored ($count secret key(s))"
+fi
+
+if [[ $DO_SSH -eq 1 ]]; then
+    TMP_DIR=$(mktemp -d)
+    tar -C "$TMP_DIR" -xpf "$SSH_TAR"
+    src_key="$TMP_DIR/.ssh/id_ed25519_sourceforge"
+    src_pub="$TMP_DIR/.ssh/id_ed25519_sourceforge.pub"
+    [[ -f $src_key && -f $src_pub ]] || die "SSH archive does not contain the expected files"
+    mkdir -p -- "$SSH_DIR"
+    chmod 700 "$SSH_DIR"
+    if [[ -e $ssh_key || -e $ssh_pub ]]; then
+        backup_ssh="$SSH_DIR/pre-restore.$(date -u +%Y%m%dT%H%M%SZ)"
+        mkdir -p -- "$backup_ssh"
+        if [[ -e $ssh_key ]]; then
+            mv -- "$ssh_key" "$backup_ssh/"
+        fi
+        if [[ -e $ssh_pub ]]; then
+            mv -- "$ssh_pub" "$backup_ssh/"
+        fi
+        log "moved existing SSH key to $backup_ssh"
+    fi
+    install -m 600 "$src_key" "$ssh_key"
+    install -m 644 "$src_pub" "$ssh_pub"
+    ssh-keygen -y -f "$ssh_key" >/dev/null
+    log "SourceForge SSH key restored"
+fi
+
+log "restore complete"
+if [[ $DO_KEYS -eq 1 ]]; then
+    log "next: source \"$keys_target/env.sh\""
+    log "      then run: \"$WORKSPACE/utils/bin/equislinux-sudo\" --apply"
+fi
