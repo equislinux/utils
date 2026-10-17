@@ -116,6 +116,14 @@ sudo ./bin/equislinux-sudo remove
 ./bin/equislinux-keygen --dry-run
 ./bin/equislinux-keygen                 # passphrase-protected (default)
 ./bin/equislinux-keygen --no-passphrase # development/automation only
+
+# Restore the keyring and SourceForge key from the offline backup
+./bin/equislinux-restore \
+  --backup-dir /run/media/x/PortableSSD/equislinux-backup-2026-10-17 \
+  --workspace ~/repos/equislinux --dry-run
+./bin/equislinux-restore \
+  --backup-dir /run/media/x/PortableSSD/equislinux-backup-2026-10-17 \
+  --workspace ~/repos/equislinux --apply
 ```
 
 Detailed guides:
@@ -124,6 +132,7 @@ Detailed guides:
 - Clone and refresh: [`docs/cloning.md`](docs/cloning.md)
 - Sudo rules: [`docs/sudo.md`](docs/sudo.md)
 - Signing key: [`docs/keygen.md`](docs/keygen.md)
+- Restore from backup: [`docs/restore.md`](docs/restore.md)
 
 The sudo rules cover only the scripts that need root:
 

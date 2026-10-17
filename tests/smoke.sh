@@ -39,6 +39,7 @@ if [[ $clone_help != *"--here"* ]]; then
     echo "clone help is missing --here" >&2
     fail=1
 fi
+"$ROOT/bin/equislinux-restore" --help >/dev/null
 sudo_help=$("$ROOT/bin/equislinux-sudo" --help)
 if ! grep -q -- '--remove' <<<"$sudo_help"; then
     echo "sudo help is missing the --remove legacy alias" >&2
