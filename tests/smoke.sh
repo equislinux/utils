@@ -32,6 +32,10 @@ if ! grep -q 'generations-btrfs.sh' <<<"$sudo_out"; then
     echo "sudo dry-run is missing the generations test target" >&2
     fail=1
 fi
+if ! grep -q 'x-kernel/scripts/build.sh' <<<"$sudo_out"; then
+    echo "sudo dry-run is missing the x-kernel build target" >&2
+    fail=1
+fi
 
 "$ROOT/bin/equislinux-keygen" --help >/dev/null
 clone_help=$("$ROOT/bin/equislinux-clone" --help)

@@ -138,6 +138,8 @@ The sudo rules cover only the scripts that need root:
 
 - `scripts/test/generations-btrfs.sh`
 - `x/xbuild.sh`
+- `x-kernel/scripts/build.sh`
+- `x-kernel/scripts/release.sh`
 - `wsl/publish-sf.sh`
 - `wsl/build-rootfs.sh`
 

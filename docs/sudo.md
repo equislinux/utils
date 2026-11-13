@@ -32,6 +32,8 @@ The allowlist is intentionally small:
 
 - `scripts/test/generations-btrfs.sh`
 - `x/xbuild.sh`
+- `x-kernel/scripts/build.sh`
+- `x-kernel/scripts/release.sh`
 - `wsl/publish-sf.sh`
 - `wsl/build-rootfs.sh`
 
@@ -92,5 +94,5 @@ The last command should work only while the rules are installed. After
   `X_WORKSPACE`, or run `equislinux-workspace --set-default`.
 - `visudo rejected the generated rules`: nothing is installed; the previous
   file is restored. Check the reported path and rerun.
-- `path exists but...`: the four expected scripts must exist in the workspace;
+- `path exists but...`: the expected scripts must exist in the workspace;
   clone/pull the repositories first.
