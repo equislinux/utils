@@ -143,6 +143,9 @@ The sudo rules cover only the scripts that need root:
 - `wsl/publish-sf.sh`
 - `wsl/build-rootfs.sh`
 
+The x-kernel build/release entries include an argument wildcard so their
+`--channel`/`--dry-run`/`--publish` options work.
+
 ## Security notes
 
 - **NOPASSWD on a script the target user can edit is equivalent to

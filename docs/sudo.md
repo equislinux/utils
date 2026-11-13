@@ -37,11 +37,14 @@ The allowlist is intentionally small:
 - `wsl/publish-sf.sh`
 - `wsl/build-rootfs.sh`
 
-For each one it writes both forms, when applicable:
+For each one it writes both forms, when applicable. The two x-kernel scripts
+also get an argument wildcard so `--channel`, `--dry-run`, `--publish`, etc.
+work:
 
 ```
 <user> ALL=(root) NOPASSWD: /usr/bin/bash /absolute/path/to/script
 <user> ALL=(root) NOPASSWD: /absolute/path/to/script
+<user> ALL=(root) NOPASSWD: /usr/bin/bash /absolute/path/to/x-kernel/scripts/build.sh *
 ```
 
 The file is installed as `/etc/sudoers.d/equislinux` with mode `0440` and
