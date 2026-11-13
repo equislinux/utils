@@ -134,6 +134,14 @@ for rel in "${REL_TARGETS[@]}"; do
     TARGETS+=("$(realpath -e -- "$WS/$rel")")
 done
 
+# The kernel scripts need arguments (--channel, --dry-run, --publish, ...).
+# Keep the exact rules and add an argument wildcard for these two only.
+ARGS_TARGETS=()
+for rel in x-kernel/scripts/build.sh x-kernel/scripts/release.sh; do
+    [[ -e "$WS/$rel" ]] || x_die "missing target: $WS/$rel"
+    ARGS_TARGETS+=("$(realpath -e -- "$WS/$rel")")
+done
+
 USER_WRITABLE=0
 for p in "${TARGETS[@]}"; do
     [[ -w $p ]] && USER_WRITABLE=1
@@ -155,6 +163,12 @@ build_rules() {
         printf '%s ALL=(root) NOPASSWD: %s %s\n' "$TARGET_USER" "$BASH_BIN" "$p"
         if [[ -x $p ]]; then
             printf '%s ALL=(root) NOPASSWD: %s\n' "$TARGET_USER" "$p"
+        fi
+    done
+    for p in "${ARGS_TARGETS[@]}"; do
+        printf '%s ALL=(root) NOPASSWD: %s %s *\n' "$TARGET_USER" "$BASH_BIN" "$p"
+        if [[ -x $p ]]; then
+            printf '%s ALL=(root) NOPASSWD: %s *\n' "$TARGET_USER" "$p"
         fi
     done
 }
